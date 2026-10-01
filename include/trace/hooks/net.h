@@ -124,6 +124,14 @@ DECLARE_HOOK(android_vh_udp_enqueue_schedule_skb,
 	TP_PROTO(struct sock *sk, struct sk_buff *skb), TP_ARGS(sk, skb));
 DECLARE_HOOK(android_vh_build_skb_around,
 	TP_PROTO(struct sk_buff *skb), TP_ARGS(skb));
+struct inet_frag_queue;
+DECLARE_HOOK(android_vh_reasm_timer_adjust,
+	TP_PROTO(struct inet_frag_queue *q, struct sk_buff *skb),
+	TP_ARGS(q, skb));
+struct page_pool;
+DECLARE_HOOK(android_vh_page_pool_validate_mp_ops,
+	TP_PROTO(struct page_pool *pool, bool *validated),
+	TP_ARGS(pool, validated));
 
 /* macro versions of hooks are no longer required */
 

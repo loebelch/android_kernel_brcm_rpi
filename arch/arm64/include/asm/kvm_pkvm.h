@@ -91,8 +91,7 @@ static inline bool kvm_pkvm_ioctl_allowed(struct kvm *kvm, unsigned int ioctl, v
 	int r;
 
 	r = kvm_get_cap_for_kvm_ioctl(ioctl, &ext);
-
-	if (WARN_ON_ONCE(r < 0))
+	if (r < 0)
 		return false;
 
 	if (kvm_pkvm_ext_allowed(kvm, ext))
@@ -243,7 +242,7 @@ static inline unsigned long host_s2_mmio_pgtable_pages(void)
 	return __hyp_pgtable_max_pages(SZ_1G >> PAGE_SHIFT);
 }
 
-#ifdef CONFIG_NVHE_EL2_DEBUG
+#ifdef CONFIG_PKVM_SELFTESTS
 static inline unsigned long pkvm_selftest_pages(void) { return 32; }
 #else
 static inline unsigned long pkvm_selftest_pages(void) { return 0; }
@@ -262,7 +261,17 @@ static inline unsigned long pkvm_selftest_pages(void) { return 0; }
 #define KVM_FFA_MAX_NR_CONSTITUENTS	4096
 extern size_t kvm_nvhe_sym(ffa_max_nr_constituents);
 
-DECLARE_STATIC_KEY_FALSE(kvm_ffa_unmap_on_lend);
+enum pkvm_ffa_unmap_on_lend_mode {
+	PKVM_FFA_UNMAP_ON_LEND_OFF = 0,
+	PKVM_FFA_UNMAP_ON_LEND_ON,
+	PKVM_FFA_UNMAP_ON_LEND_FULL,
+};
+
+extern int kvm_nvhe_sym(__pkvm_ffa_unmap_on_lend);
+static inline bool pkvm_ffa_unmap_on_lend(void)
+{
+	return kvm_nvhe_sym(__pkvm_ffa_unmap_on_lend);
+}
 
 static inline unsigned long hyp_ffa_proxy_pages(void)
 {
@@ -292,7 +301,7 @@ static inline unsigned long hyp_ffa_proxy_pages(void)
 	/* Plus a page each for the hypervisor's RX and TX mailboxes. */
 	num_pages = (2 * KVM_FFA_MBOX_NR_PAGES) + DIV_ROUND_UP(desc_max, PAGE_SIZE);
 
-	if (static_branch_unlikely(&kvm_ffa_unmap_on_lend))
+	if (pkvm_ffa_unmap_on_lend())
 		num_pages += KVM_FFA_SPM_HANDLE_NR_PAGES;
 
 	return num_pages;

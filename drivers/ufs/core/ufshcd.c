@@ -5557,6 +5557,15 @@ static int ufshcd_sdev_configure(struct scsi_device *sdev,
 	if (hba->dev_info.zwor_sup)
 		lim->features |= BLK_FEAT_ZWOR;
 
+	/*
+	 * The write order is preserved per MCQ. Without MCQ, auto-hibernation
+	 * may cause write reordering that results in unaligned write errors.
+	 */
+	if (hba->mcq_enabled)
+		lim->features |= BLK_FEAT_ORDERED_HWQ;
+	if (to_hba_priv(hba)->zwor_sup)
+		lim->features |= BLK_FEAT_ZWOR;
+
 	lim->dma_pad_mask = PRDT_DATA_BYTE_COUNT_PAD - 1;
 
 	/*
@@ -7418,6 +7427,15 @@ static irqreturn_t ufshcd_intr(int irq, void *__hba)
 {
 	struct ufs_hba *hba = __hba;
 	u32 intr_status, enabled_intr_status;
+	bool use_threaded = true;
+
+	/*
+	 * Allow vendor to opt out of the threaded interrupt handler and
+	 * process the interrupt directly in the primary handler instead.
+	 */
+	trace_android_vh_ufs_use_threaded_intr(hba, &use_threaded);
+	if (!use_threaded)
+		return ufshcd_threaded_intr(irq, __hba);
 
 	/*
 	 * Handle interrupt in thread if MCQ or ESI is disabled,
@@ -10821,7 +10839,7 @@ int ufshcd_alloc_host(struct device *dev, struct ufs_hba **hba_handle)
 	}
 
 	host = scsi_host_alloc(&ufshcd_driver_template,
-				sizeof(struct ufs_hba));
+			       sizeof(struct ufs_hba_priv));
 	if (!host) {
 		dev_err(dev, "scsi_host_alloc failed\n");
 		err = -ENOMEM;

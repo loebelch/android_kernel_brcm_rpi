@@ -86,6 +86,14 @@ DECLARE_HOOK(android_vh_ufs_transfer_rsp_status,
 	TP_PROTO(struct ufs_hba *hba, struct ufshcd_lrb *lrbp, struct cq_entry *cqe, int result),
 	TP_ARGS(hba, lrbp, cqe, result));
 
+DECLARE_HOOK(android_vh_ufs_use_threaded_intr,
+	TP_PROTO(struct ufs_hba *hba, bool *use_threaded),
+	TP_ARGS(hba, use_threaded));
+
+DECLARE_HOOK(android_vh_ufs_mcq_cleanup,
+	TP_PROTO(struct ufs_hba *hba, int task_tag, bool start),
+	TP_ARGS(hba, task_tag, start));
+
 #endif /* _TRACE_HOOK_UFSHCD_H */
 /* This part must be outside protection */
 #include <trace/define_trace.h>

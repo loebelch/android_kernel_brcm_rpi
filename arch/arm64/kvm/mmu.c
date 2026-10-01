@@ -1734,13 +1734,12 @@ static int __pkvm_pin_user_pages(struct kvm *kvm, struct kvm_memory_slot *memslo
 	long ret;
 	int p;
 
-	pages = kmalloc_array(nr_pages, sizeof(*pages), GFP_KERNEL);
+	pages = kvmalloc_array(nr_pages, sizeof(*pages), GFP_KERNEL);
 	if (!pages)
 		return -ENOMEM;
 
-	mmap_read_lock(mm);
+	mmap_assert_locked(mm);
 	ret = pin_user_pages(hva, nr_pages, flags, pages);
-	mmap_read_unlock(mm);
 
 	if (ret == -EHWPOISON) {
 		kvm_send_hwpoison_signal(hva, PAGE_SHIFT);
@@ -1785,7 +1784,7 @@ static int __pkvm_pin_user_pages(struct kvm *kvm, struct kvm_memory_slot *memslo
 err_unpin_pages:
 	unpin_user_pages(pages, nr_pages);
 err_free_pages:
-	kfree(pages);
+	kvfree(pages);
 	return ret;
 }
 
@@ -1803,12 +1802,11 @@ static int __pkvm_mem_abort_dmabuf(struct kvm_vcpu *vcpu, struct kvm_memory_slot
 		return -EFAULT;
 
 	while (nr_pages--) {
-		file = NULL;
 		pfn = ___kvm_faultin_pfn(memslot, gfn, FOLL_WRITE, &writable, &page, &file);
-		if (is_error_pfn(pfn) || !pfn_is_map_memory(pfn))
+		if (is_error_pfn(pfn))
 			return -EFAULT;
 
-		if (!writable || !file || !is_dma_buf_file(file)) {
+		if (!pfn_is_map_memory(pfn) || !writable || !file || !is_dma_buf_file(file)) {
 			if (file)
 				fput(file);
 			kvm_release_page_clean(page);
@@ -2104,7 +2102,7 @@ static int pkvm_mem_abort_device(struct kvm_vcpu *vcpu, struct kvm_memory_slot *
 
 		device = !pfn_is_map_memory(pfn);
 		if (device) {
-			int ret = kvm_call_hyp_nvhe(__pkvm_host_map_guest_mmio, pfn, gfn);
+			int ret = kvm_call_refill_hyp_nvhe(__pkvm_host_map_guest_mmio, pfn, gfn);
 			/* Ignore EEXIST as we might have raced with another vCPU. */
 			if (ret && (ret != -EEXIST)) {
 				return ret;
@@ -2154,10 +2152,13 @@ static int pkvm_mem_abort(struct kvm_vcpu *vcpu, phys_addr_t fault_ipa, size_t s
 	if (nr_pages < 0)
 		return nr_pages;
 
+	mmap_read_lock(mm);
 	ret = __pkvm_pin_user_pages(kvm, memslot, gfn, nr_pages, &pages);
 	if (ret == -EHWPOISON) {
+		mmap_read_unlock(mm);
 		return 0;
 	} else if (ret == -EREMOTEIO) {
+		mmap_read_unlock(mm);
 		/*
 		 * pKVM relies on pinning the page then getting the pfn from there to map it,
 		 * However, to avoid adding overhead on the hot path with checking pfn first,
@@ -2171,13 +2172,16 @@ static int pkvm_mem_abort(struct kvm_vcpu *vcpu, phys_addr_t fault_ipa, size_t s
 
 		ret = __pkvm_mem_abort_dmabuf(vcpu, memslot, gfn, nr_pages, &ppages);
 		if (ret)
-			goto free_pages;
+			goto free_ppages;
 		goto topup;
 	} else if (ret) {
+		mmap_read_unlock(mm);
 		return ret;
 	}
 
 	ret = __pkvm_pages_to_ppages(kvm, memslot, gfn, &nr_pages, pages, &ppages);
+	mmap_read_unlock(mm);
+
 	if (ret) {
 		unpin_user_pages(pages, nr_pages);
 		goto free_pages;
@@ -2208,7 +2212,7 @@ free_ppages:
 		kfree(ppage);
 	}
 free_pages:
-	kfree(pages);
+	kvfree(pages);
 	return ret;
 }
 
@@ -2235,8 +2239,8 @@ int pkvm_mem_abort_range(struct kvm_vcpu *vcpu, phys_addr_t fault_ipa, size_t si
 }
 
 /*
- * Splitting is only expected on the back of a relinquish guest HVC in the pKVM case, while
- * pkvm_pgtable_stage2_split() can be called with dirty logging.
+ * Splitting is expected on the back of a share or a relinquish guest HVC in the pKVM
+ * case, while pkvm_pgtable_stage2_split() can be called with dirty logging.
  */
 int __pkvm_pgtable_stage2_split(struct kvm_vcpu *vcpu, phys_addr_t ipa, size_t size)
 {
@@ -2244,6 +2248,7 @@ int __pkvm_pgtable_stage2_split(struct kvm_vcpu *vcpu, phys_addr_t ipa, size_t s
 	struct kvm_hyp_memcache *hyp_memcache = &vcpu->arch.stage2_mc;
 	struct kvm_pinned_page *ppage, *tmp;
 	struct kvm_memory_slot *memslot;
+	struct arm_smccc_res res = { };
 	struct kvm *kvm = vcpu->kvm;
 	int idx, p, ret, nr_pages;
 	struct page **pages;
@@ -2279,7 +2284,9 @@ int __pkvm_pgtable_stage2_split(struct kvm_vcpu *vcpu, phys_addr_t ipa, size_t s
 
 	idx = srcu_read_lock(&vcpu->kvm->srcu);
 	memslot = gfn_to_memslot(vcpu->kvm, gfn);
+	mmap_read_lock(current->mm);
 	ret = __pkvm_pin_user_pages(kvm, memslot, gfn, nr_pages, &pages);
+	mmap_read_unlock(current->mm);
 	if (ret)
 		goto unlock_srcu;
 
@@ -2295,7 +2302,21 @@ int __pkvm_pgtable_stage2_split(struct kvm_vcpu *vcpu, phys_addr_t ipa, size_t s
 		goto end;
 	}
 
-	ret = kvm_call_hyp_nvhe(__pkvm_host_split_guest, ipa >> PAGE_SHIFT, size);
+	/*
+	 * Ensure userspace has not remapped the HVA since the huge page was
+	 * donated; every newly pinned page's PFN (HPA) must match ppage.
+	 */
+	for (p = 0; p < nr_pages; p++) {
+		if (page_to_pfn(pages[p]) != ppage->pfn + 1 + p) {
+			ret = -EFAULT;
+			goto end;
+		}
+	}
+
+	arm_smccc_1_1_hvc(KVM_HOST_SMCCC_FUNC(__pkvm_host_split_guest),
+			  ipa >> PAGE_SHIFT, size, &res);
+	WARN_ON(res.a0 != SMCCC_RET_SUCCESS);
+	ret = res.a1;
 	if (ret)
 		goto end;
 
@@ -2328,7 +2349,11 @@ end:
 
 	if (ret)
 		unpin_user_pages(pages, nr_pages);
-	kfree(pages);
+	kvfree(pages);
+
+	/* Servicing a hyp request allocates, so it must run outside the mmu_lock. */
+	if (ret && res.a1)
+		ret = __pkvm_handle_smccc_req(&res, NULL);
 
 unlock_srcu:
 	srcu_read_unlock(&vcpu->kvm->srcu, idx);

@@ -137,6 +137,15 @@ noacl			 Disable POSIX Access Control List. Note: acl is enabled
 active_logs=%u		 Support configuring the number of active logs. In the
 			 current design, f2fs supports only 2, 4, and 6 logs.
 			 Default number is 6.
+			 When the underlying block device exposes write
+			 streams, the default active_logs=6 configuration
+			 maps hot, warm, and cold DATA writes to streams 1,
+			 2, and 3, respectively. If only one or two write
+			 streams are available, f2fs falls back to mapping
+			 all DATA writes to stream 1 or mapping hot/warm
+			 to stream 1 and cold to stream 2. If no write
+			 streams are exposed, f2fs leaves the stream
+			 unset.
 disable_ext_identify	 Disable the extension list configured by mkfs, so f2fs
 			 is not aware of cold files such as media files.
 inline_xattr		 Enable the inline xattrs feature.
@@ -408,7 +417,13 @@ lookup_mode=%s		 Control the directory lookup behavior for casefolded
 			     auto               F2FS determines the mode based on the
 					        on-disk `SB_ENC_NO_COMPAT_FALLBACK_FL`
 					        flag.
-			     ================== ========================================
+resizable_tail_secno=%u  Control the number of sections at the tail of the
+			 filesystem reserved for online resizing. Pinned files
+			 will only be allocated within sections 0 to
+			 (MAIN_SECS - resizable_tail_secno) - 1. If set to 0
+			 (default), there is no tail restriction unless running
+			 on a zoned block device where conventional zones are
+			 used.
 ======================== ============================================================
 
 Debugfs Entries
@@ -1036,6 +1051,41 @@ So, the key idea is, user can do any file operations on /dev/vdc, and
 reclaim the space after the use, while the space is counted as /data.
 That doesn't require modifying partition size and filesystem format.
 
+Dynamic Device Aliasing Management
+----------------------------------
+
+In addition to static device aliasing by deleting the aliasing file, F2FS
+supports dynamic management of device aliasing. This mechanism allows the system
+to dynamically transition partition ownership between F2FS userdata and external
+entities (e.g., zRAM, raw partition) based on system requirements without
+deleting the master aliasing file or requiring unmount/remount.
+
+The master aliasing file is created during the initial format of the file system
+and remains as a persistent control entity (ioctl gateway) in the root directory.
+
+- Partition Reservation (In-service to Aliased)
+  When a specific partition needs to be dedicated to external services (e.g., zRAM),
+  a user can reserve the device alias range via ioctl. The kernel resets GC victim
+  information for the target range, marks segments as in-use to prevent new
+  allocations, and triggers forced GC to migrate existing valid data out of the
+  range. Finally, it reserves these blocks in the SIT to effectively exclude the
+  device from the usable capacity.
+
+- Partition Release (Aliased to In-service)
+  When external usage concludes, the space is reclaimed not by deleting the file,
+  but through the release ioctl. The kernel truncates blocks associated with
+  the file, releasing them back to general filesystem allocation.
+
+.. code-block::
+
+   # f2fs_io dev_alias release /mnt/f2fs/vdc.file
+   # df -h
+   /dev/vdb                            64G  753M   64G   2% /mnt/f2fs
+
+   # f2fs_io dev_alias reserve /mnt/f2fs/vdc.file
+   # df -h
+   /dev/vdb                            64G   33G   32G  52% /mnt/f2fs
+
 Per-file Read-Only Large Folio Support
 --------------------------------------
 
@@ -1044,14 +1094,11 @@ page allocation for significant performance gains. To minimize code complexity,
 this support is currently excluded from the write path, which requires handling
 complex optimizations such as compression and block allocation modes.
 
-This optional feature is triggered by two mechanisms: the file's immutable bit
-or a specific xattr flag. In both cases, F2FS ensures data integrity by
-restricting the file to a read-only state while large folios are active.
-
-1. Immutable Bit Approach:
-Triggered when the FS_IMMUTABLE_FL is set. This is a strict enforcement
-where the file cannot be modified at all until the bit is cleared and
-the cached inode is dropped.
+This optional feature is triggered only when a file's immutable bit is set.
+Consequently, F2FS will return EOPNOTSUPP if a user attempts to open a cached
+file with write permissions, even immediately after clearing the bit. Write
+access is only restored once the cached inode is dropped. The usage flow is
+demonstrated below:
 
 .. code-block::
 
@@ -1081,31 +1128,3 @@ the cached inode is dropped.
    Written 4096 bytes with pattern = zero, total_time = 29 us, max_latency = 28 us
 
    # rm /data/testfile_read_seq
-
-2. XATTR fadvise Approach:
-A more flexible registration via extended attributes.
-
-.. code-block::
-
-    enum {
-        F2FS_XATTR_FADV_LARGEFOLIO,
-    };
-    unsigned int value = BIT(F2FS_XATTR_FADV_LARGEFOLIO);
-
-    /* Registers the inode number for large folio support in the subsystem.*/
-    # setxattr(file, "user.fadvise", &value, sizeof(unsigned int), 0)
-
-    /* The file must be made Read-Only to transition into the large folio path. */
-    # fchmod(0400, fd)
-
-    /* clean up dirty inode state. */
-    # fsync(fd)
-
-    /* Drop the inode cache.
-    # close(fd)
-
-    /* f2fs_iget() instantiates the inode with large folio support.*/
-    # open()
-
-    /* Returns -EOPNOTSUPP or error to protect the large folio cache.*/
-    # open(WRITE), mkwrite on mmap, or chmod(WRITE)

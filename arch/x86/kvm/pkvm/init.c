@@ -3,8 +3,10 @@
 #include <asm/fpu/xstate.h>
 #include <asm/kvm_pkvm.h>
 #include "../cpuid.h"
+#include "../x86.h"
 #include "early_alloc.h"
 #include "fpu.h"
+#include "gsmi.h"
 #include "init.h"
 #include "lapic.h"
 #include "memory.h"
@@ -247,6 +249,10 @@ static int initialize_global(struct pkvm_mem_info infos[], int nr_infos)
 	 */
 	kvm_init_xstate_sizes();
 
+	ret = pkvm_init_gsmi();
+	if (ret)
+		return ret;
+
 	if (hyp_iommu_init) {
 		ret = hyp_iommu_init();
 		if (ret)
@@ -300,6 +306,8 @@ int pkvm_init(struct pkvm_mem_info infos[], int nr_infos)
 		return ret;
 
 	pkvm_vcpu_perf_init(this_cpu_read(host_vcpu));
+
+	kvm_user_return_msr_cpu_online();
 
 	this_cpu_write(cpu_initialized, true);
 	return 0;

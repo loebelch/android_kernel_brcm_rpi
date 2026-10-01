@@ -18,7 +18,6 @@
 #include <linux/mm_inline.h>
 #include <linux/mmu_notifier.h>
 #include <linux/poll.h>
-#include <linux/page_size_compat.h>
 #include <linux/slab.h>
 #include <linux/seq_file.h>
 #include <linux/file.h>
@@ -1220,8 +1219,6 @@ static __always_inline int validate_unaligned_range(
 		return -EINVAL;
 	if (!len)
 		return -EINVAL;
-	if (start < mmap_min_addr)
-		return -EINVAL;
 	if (start >= task_size)
 		return -EINVAL;
 	if (len > task_size - start)
@@ -2177,9 +2174,6 @@ static inline bool userfaultfd_syscall_allowed(int flags)
 
 SYSCALL_DEFINE1(userfaultfd, int, flags)
 {
-	if (__PAGE_SIZE != PAGE_SIZE)
-		return -EOPNOTSUPP;
-
 	if (!userfaultfd_syscall_allowed(flags))
 		return -EPERM;
 
@@ -2210,9 +2204,6 @@ static struct miscdevice userfaultfd_misc = {
 static int __init userfaultfd_init(void)
 {
 	int ret;
-
-	if (__PAGE_SIZE != PAGE_SIZE)
-		return 0;
 
 	ret = misc_register(&userfaultfd_misc);
 	if (ret)

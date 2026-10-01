@@ -63,6 +63,17 @@
 #include <trace/hooks/mm.h>
 
 /*
+ * trace_android_vh_unlock_mmap_bypass is called in mm/internal.h
+ * by including trace/hooks/mm.h directly, which will result in build-err.
+ * So we create func: _trace_android_vh_unlock_mmap_bypass.
+ */
+void _trace_android_vh_unlock_mmap_bypass(struct vm_fault *vmf,
+		struct file *fpin, bool *bypass)
+{
+	trace_android_vh_unlock_mmap_bypass(vmf, fpin, bypass);
+}
+
+/*
  * FIXME: remove all knowledge of the buffer layer from the core VM
  */
 #include <linux/buffer_head.h> /* for try_to_free_buffers */
@@ -70,6 +81,12 @@
 #include <asm/mman.h>
 
 #include "swap.h"
+
+void _trace_android_rvh_mapping_shrinkable(bool *shrinkable)
+{
+	trace_android_rvh_mapping_shrinkable(shrinkable);
+}
+EXPORT_SYMBOL_GPL(_trace_android_rvh_mapping_shrinkable);
 
 /*
  * Shared mappings implemented 30.11.1994. It's not fully working yet,
@@ -250,7 +267,8 @@ void __filemap_remove_folio(struct folio *folio, void *shadow)
 }
 EXPORT_SYMBOL(__filemap_remove_folio);
 
-void filemap_free_folio(struct address_space *mapping, struct folio *folio)
+static void filemap_free_folio(const struct address_space *mapping,
+		struct folio *folio)
 {
 	void (*free_folio)(struct folio *);
 
@@ -3419,6 +3437,7 @@ static struct file *do_sync_mmap_readahead(struct vm_fault *vmf)
 	trace_android_vh_tune_mmap_readaround(ra->ra_pages, vmf->pgoff,
 			&ra->start, &ra->size, &ra->async_size);
 	ractl._index = ra->start;
+	trace_android_vh_page_cache_read(file->f_inode, ra->start, ra->size);
 	trace_android_vh_page_cache_readahead_start(file, vmf->pgoff,
 			ra->size, true);
 	trace_android_vh_customize_ractl(&ractl, ra, vmf->vma, false);
@@ -4116,6 +4135,7 @@ static struct folio *do_read_cache_folio(struct address_space *mapping,
 	struct folio *folio;
 	int err;
 
+	trace_android_vh_page_cache_read(mapping->host, index, 1);
 	if (!filler)
 		filler = mapping->a_ops->read_folio;
 repeat:
@@ -4406,6 +4426,7 @@ retry:
 			if (unlikely(status < 0))
 				break;
 		}
+		trace_android_vh_io_statistics(mapping, folio->index, 1, false, false);
 		cond_resched();
 
 		if (unlikely(status == 0)) {

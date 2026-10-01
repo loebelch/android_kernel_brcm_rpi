@@ -146,6 +146,7 @@
   drm_release
   drm_set_preferred_mode
   drm_vblank_init
+  dst_release
   ether_setup
   eth_mac_addr
   ethtool_op_get_link
@@ -887,7 +888,6 @@
   device_bind_driver
   device_create
   device_release_driver
-  dst_release
   genl_notify
   net_namespace_list
   rhashtable_destroy
@@ -972,6 +972,11 @@
   vlan_vid_del
   vlan_vids_add_by_dev
   vlan_vids_del_by_dev
+
+# required by pkvm_iommu_temp.ko
+  kvm_iommu_register_driver
+  kvm_iommu_register_hyp_ops
+  __pkvm_load_el2_module
 
 # required by pl111_drm.ko
   __clk_get_name
@@ -1063,6 +1068,7 @@
 
 # required by snd-aloop.ko
   devm_kstrdup
+  hrtimer_try_to_cancel
   snd_card_ref
   snd_card_rw_proc_new
   snd_ctl_boolean_mono_info
@@ -1338,6 +1344,8 @@
   netif_tx_unlock
   nr_cpu_ids
   __num_online_cpus
+  page_pinner_inited
+  __page_pinner_put_page
   sched_clock
   skb_coalesce_rx_frag
   __skb_flow_dissect
@@ -1498,7 +1506,6 @@
   drm_crtc_vblank_crtc
   drm_crtc_vblank_put
   drm_debugfs_add_files
-  __drm_debug_trace
   drm_format_info_bpp
   __drm_gem_destroy_shadow_plane_state
   __drm_gem_duplicate_shadow_plane_state
@@ -1518,7 +1525,6 @@
   drmm_writeback_connector_init
   drm_plane_create_color_properties
   drm_plane_create_rotation_property
-  __drm_printfn_trace
   drm_rect_rotate_inv
   drm_writeback_queue_job
   drm_writeback_signal_completion
@@ -1529,3 +1535,7 @@
   xa_erase
   xa_find
   xa_find_after
+
+# preserved by --additions-only
+  __drm_debug_trace
+  __drm_printfn_trace
